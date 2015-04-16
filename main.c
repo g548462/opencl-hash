@@ -2,12 +2,10 @@
 #include <stdlib.h>
 #include <CL/cl.h>
 #include <time.h>
-//#include "hash.h"
-//#define CHECK_ERROR(msg) if(status != CL_SUCCESS){printf("Error at %s \n",msg);return 0;}
 
 #define DEBUG 0
-#define TUPLES 1000
-#define ARRAY_SIZE 10000
+#define TUPLES 10000
+#define ARRAY_SIZE 100000
 #define TIMES 1000
 #define MAX_SOURCE_SIZE (0x100000)
 
@@ -53,7 +51,6 @@ int main()
         array[i] = i;
     }
     clock_t begin, end;
-    double time;
     
     int *hash_table;
     int hash_table_size = 2 * sizeof(int) * TUPLES;
@@ -64,6 +61,7 @@ int main()
     cl_int status;
     cl_int numPlatforms = 0;
 
+    //  Create unique random number
     for(i=0; i<ARRAY_SIZE; i++) {
         int tmp1 = rand()%ARRAY_SIZE;
         int tmp2 = rand()%ARRAY_SIZE;
@@ -72,6 +70,7 @@ int main()
         array[tmp2] = tmp3;
     }
 
+    //  Init random data for Hash
     for(i=0; i<TUPLES; i++)
     {
         data[i] = array[i];
@@ -80,6 +79,7 @@ int main()
             printf("%d hash: %u\n", data[i], hash1(data[i]) % hash_table_size);
         }
     }
+
     printf("\n");
     //Get Platform
     status = clGetPlatformIDs(0, NULL, &numPlatforms);
@@ -90,11 +90,18 @@ int main()
 
     //Get Devices
     cl_int numDevices = 0;
-    status = clGetDeviceIDs(platforms[0], CL_DEVICE_TYPE_ALL, 0, NULL, &numDevices);
+    status = clGetDeviceIDs(platforms[1], CL_DEVICE_TYPE_ALL, 0, NULL, &numDevices);
     printf("\t[info] Total %d Devices... \n", numDevices);
     cl_device_id *devices;
     devices = (cl_device_id*)malloc(sizeof(cl_device_id) * numDevices);
-    status |= clGetDeviceIDs(platforms[0], CL_DEVICE_TYPE_ALL, numDevices, devices, NULL);
+    status |= clGetDeviceIDs(platforms[1], CL_DEVICE_TYPE_GPU, numDevices, devices, NULL);
+
+    size_t cb;
+    char *devicename;
+    devicename = (char*)malloc(sizeof(char)*100);
+    clGetDeviceInfo(devices[0], CL_DEVICE_NAME, 0, NULL, &cb);
+    clGetDeviceInfo(devices[0], CL_DEVICE_NAME, cb, devicename, 0);
+    printf("DeviceName = %s\n", devicename);
 
     if(status == CL_SUCCESS) printf("\t[Info] Get DeviceIDs Success!\n");  
     else fprintf(stderr, "\t[Error] Get DeviceIDs Fail!\n");
@@ -105,7 +112,7 @@ int main()
     else fprintf(stderr, "\t[Error] Create Context Fail!\n");
 
     cl_command_queue cmdQueue;  
-    cmdQueue = clCreateCommandQueue(context, devices[0], 0, &status);  
+    cmdQueue = clCreateCommandQueue(context, devices[0], CL_QUEUE_PROFILING_ENABLE, &status);  
     if(status == CL_SUCCESS) printf("\t[Info] Create CommandQueue Success!\n");  
     else fprintf(stderr, "\t[Error] Create CommandQueue Fail!\n");
 
@@ -188,6 +195,10 @@ int main()
     if(status == CL_SUCCESS) printf("\t[Info] Set kernel Argu Success!\n");  
     else fprintf(stderr, "\t[Error] Set kernel Argu Fail! Msg:%d \n", status);
 
+    cl_event k_event[2];
+    cl_uint num_events_in_wait_list;
+    cl_command_queue profile_queue;
+    profile_queue = clCreateCommandQueue(context, devices[0], CL_QUEUE_PROFILING_ENABLE, &status);
 
     status = clEnqueueNDRangeKernel(cmdQueue,       // A valid command-queue  
         kernel,         // A valid kernel object.  
@@ -197,13 +208,22 @@ int main()
         NULL,           // local_work_size  
         0,              // num_events_in_wait_list  
         NULL,           // *event_wait_list  
-        NULL            // *event  
+        &k_event[0]            // *event  
         );  
+    
+    clWaitForEvents(1, &k_event[0]);
+    cl_ulong start_time, end_time;
+    size_t return_bytes;
+    err = clGetEventProfilingInfo(k_event[0], CL_PROFILING_COMMAND_START, sizeof(cl_ulong), &start_time, &return_bytes);
+    err = clGetEventProfilingInfo(k_event[0], CL_PROFILING_COMMAND_END, sizeof(cl_ulong), &end_time, &return_bytes);
+    double runtime = (double)(end_time - start_time);
+    printf("\t[Info] Hash1 Run time = %fms\n", runtime/1000000);
 
     if(status == CL_SUCCESS) printf("\t[Info] enQueue kernel Success!\n");  
     else fprintf(stderr, "\t[Error] enQueue kernel Fail! Msg:%d \n", status);
 
 
+    //  Read build HT result
     status = clEnqueueReadBuffer(cmdQueue,     // Refers to the command-queue in which the read command will be queued  
         buf_hash_table,         // Refers to a valid buffer object.  
         CL_TRUE,      // Indicates if the read operations are blocking or non-blocking.  
@@ -215,7 +235,7 @@ int main()
         NULL          // *event  
         ); 
 
-
+    //  Enqueue validate kernel
     status = clEnqueueNDRangeKernel(cmdQueue,       // A valid command-queue  
         validKernel,         // A valid kernel object.  
         1,              // work_dim  
@@ -226,46 +246,58 @@ int main()
         NULL,           // *event_wait_list  
         NULL            // *event  
         );  
-
-
+    
+    //  Return validate value
     status = clEnqueueReadBuffer(cmdQueue,     // Refers to the command-queue in which the read command will be queued  
-        buf_hash_table,         // Refers to a valid buffer object.  
+        error,         // Refers to a valid buffer object.  
         CL_TRUE,      // Indicates if the read operations are blocking or non-blocking.  
         0,            // The offset in bytes in the buffer object to read from.  
-        sizeof(int) * hash_table_size,     // The size in bytes of data being read.  
-        hash_table,            // The pointer to buffer in host memory where data is to be read into.  
+        sizeof(char),     // The size in bytes of data being read.  
+        &err,            // The pointer to buffer in host memory where data is to be read into.  
         0,            // num_events_in_wait_list  
         NULL,         // *event_wait_list  
         NULL          // *event  
         ); 
 
+    // if collision occur, Do buildHashTablePessimistic
+    if(err) {
+        printf("\n\t-----Collision-----\n");
 
-    status = clEnqueueNDRangeKernel(cmdQueue,       // A valid command-queue  
-        kernelPessimistic,         // A valid kernel object.  
-        1,              // work_dim  
-        NULL,           // *global_work_offset  
-        globalWorkSize, // *global_work_size  
-        NULL,           // local_work_size  
-        0,              // num_events_in_wait_list  
-        NULL,           // *event_wait_list  
-        NULL            // *event  
-        );  
+        //  Enqueue Pessimistic kernel
+        status = clEnqueueNDRangeKernel(cmdQueue,       // A valid command-queue  
+            kernelPessimistic,         // A valid kernel object.  
+            1,              // work_dim  
+            NULL,           // *global_work_offset  
+            globalWorkSize, // *global_work_size  
+            NULL,           // local_work_size  
+            0,              // num_events_in_wait_list  
+            NULL,           // *event_wait_list  
+            &k_event[1]            // *event  
+            );  
+        if(status == CL_SUCCESS) printf("\t[Info] enQueue Pessimistic Success!\n");  
+        else fprintf(stderr, "\t[Error] enQueue Pessimistic Fail! Msg:%d \n", status);
+
+        //  Get runtime info
+        clWaitForEvents(1, &k_event[1]);
+        err = clGetEventProfilingInfo(k_event[1], CL_PROFILING_COMMAND_START, sizeof(cl_ulong), &start_time, &return_bytes);
+        err = clGetEventProfilingInfo(k_event[1], CL_PROFILING_COMMAND_END, sizeof(cl_ulong), &end_time, &return_bytes);
+        runtime = (double)(end_time - start_time);
+        printf("\t[Info] Persimisstic Run time = %fms\n", runtime/1000000);
 
 
-    if(status == CL_SUCCESS) printf("\t[Info] enQueue NDR Success!\n");  
-    else fprintf(stderr, "\t[Error] enQueue NDR Fail! Msg:%d \n", status);
 
 
-    status = clEnqueueReadBuffer(cmdQueue,     // Refers to the command-queue in which the read command will be queued  
-        buf_hash_table,         // Refers to a valid buffer object.  
-        CL_TRUE,      // Indicates if the read operations are blocking or non-blocking.  
-        0,            // The offset in bytes in the buffer object to read from.  
-        sizeof(int) * hash_table_size,     // The size in bytes of data being read.  
-        hash_table,            // The pointer to buffer in host memory where data is to be read into.  
-        0,            // num_events_in_wait_list  
-        NULL,         // *event_wait_list  
-        NULL          // *event  
-        );  
+        status = clEnqueueReadBuffer(cmdQueue,     // Refers to the command-queue in which the read command will be queued  
+            buf_hash_table,         // Refers to a valid buffer object.  
+            CL_TRUE,      // Indicates if the read operations are blocking or non-blocking.  
+            0,            // The offset in bytes in the buffer object to read from.  
+            sizeof(int) * hash_table_size,     // The size in bytes of data being read.  
+            hash_table,            // The pointer to buffer in host memory where data is to be read into.  
+            0,            // num_events_in_wait_list  
+            NULL,         // *event_wait_list  
+            NULL          // *event  
+            ); 
+    } 
 
     //debug code
     if(DEBUG){ 
