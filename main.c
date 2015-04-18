@@ -4,8 +4,9 @@
 #include <time.h>
 
 #define DEBUG 0
-#define TUPLES 10000
-#define ARRAY_SIZE 100000
+#define MSG 0
+#define TUPLES 10000000
+#define ARRAY_SIZE 10000000
 #define TIMES 1000
 #define MAX_SOURCE_SIZE (0x100000)
 
@@ -52,12 +53,12 @@ int main()
     }
     clock_t begin, end;
     
-    int *hash_table;
+    int *hash_table, *rehash_table;
     int hash_table_size = 2 * sizeof(int) * TUPLES;
     int *data;
     data = (int*)malloc(sizeof(int) * TUPLES);
     hash_table = (int*)malloc(sizeof(int) * hash_table_size);
-
+    rehash_table = (int*)malloc(sizeof(int) * hash_table_size);
     cl_int status;
     cl_int numPlatforms = 0;
 
@@ -83,66 +84,113 @@ int main()
     printf("\n");
     //Get Platform
     status = clGetPlatformIDs(0, NULL, &numPlatforms);
-    printf("\t[info] Total %d platforms... \n", numPlatforms);
+    if(MSG) { printf("\t[info] Total %d platforms... \n", numPlatforms); }
     cl_platform_id *platforms = NULL;
     platforms  = (cl_platform_id*)malloc(sizeof(cl_platform_id) * numPlatforms);
     status |= clGetPlatformIDs(numPlatforms, platforms, NULL);
 
     //Get Devices
-    cl_int numDevices = 0;
-    status = clGetDeviceIDs(platforms[1], CL_DEVICE_TYPE_ALL, 0, NULL, &numDevices);
-    printf("\t[info] Total %d Devices... \n", numDevices);
-    cl_device_id *devices;
-    devices = (cl_device_id*)malloc(sizeof(cl_device_id) * numDevices);
-    status |= clGetDeviceIDs(platforms[1], CL_DEVICE_TYPE_GPU, numDevices, devices, NULL);
+    //platform[0] is CPU, platform[1] is GPU
+    cl_int CPU_numDevices = 0;
+    cl_int GPU_numDevices = 0;
+    status = clGetDeviceIDs(platforms[0], CL_DEVICE_TYPE_CPU, 0, NULL, &CPU_numDevices);
+    status = clGetDeviceIDs(platforms[1], CL_DEVICE_TYPE_GPU, 0, NULL, &GPU_numDevices);
+    if(MSG) {
+        printf("\t[info] Total CPU %d Devices... \n", CPU_numDevices);
+        printf("\t[info] Total GPU %d Devices... \n", GPU_numDevices);
+    }
+
+    cl_device_id *CPU_devices;
+    cl_device_id *GPU_devices;
+    CPU_devices = (cl_device_id*)malloc(sizeof(cl_device_id) * CPU_numDevices);
+    GPU_devices = (cl_device_id*)malloc(sizeof(cl_device_id) * GPU_numDevices);
+    status |= clGetDeviceIDs(platforms[0], CL_DEVICE_TYPE_ALL, CPU_numDevices, CPU_devices, NULL);
+    status |= clGetDeviceIDs(platforms[1], CL_DEVICE_TYPE_ALL, GPU_numDevices, GPU_devices, NULL);
 
     size_t cb;
     char *devicename;
     devicename = (char*)malloc(sizeof(char)*100);
-    clGetDeviceInfo(devices[0], CL_DEVICE_NAME, 0, NULL, &cb);
-    clGetDeviceInfo(devices[0], CL_DEVICE_NAME, cb, devicename, 0);
-    printf("DeviceName = %s\n", devicename);
+    clGetDeviceInfo(CPU_devices[0], CL_DEVICE_NAME, 0, NULL, &cb);
+    clGetDeviceInfo(CPU_devices[0], CL_DEVICE_NAME, cb, devicename, 0);
+    if(MSG) { printf("DeviceName = %s\n", devicename); }
+    clGetDeviceInfo(GPU_devices[0], CL_DEVICE_NAME, 0, NULL, &cb);
+    clGetDeviceInfo(GPU_devices[0], CL_DEVICE_NAME, cb, devicename, 0);
+    if(MSG) { printf("DeviceName = %s\n", devicename); }
 
-    if(status == CL_SUCCESS) printf("\t[Info] Get DeviceIDs Success!\n");  
-    else fprintf(stderr, "\t[Error] Get DeviceIDs Fail!\n");
+    if(MSG) {
+        if(status == CL_SUCCESS) printf("\t[Info] Get DeviceIDs Success!\n");  
+        else fprintf(stderr, "\t[Error] Get DeviceIDs Fail!\n");
+    }
 
-    cl_context context;
-    context = clCreateContext(NULL, numDevices, devices, NULL, NULL, &status); 
-    if(status == CL_SUCCESS) printf("\t[Info] Create Context Success!\n");  
-    else fprintf(stderr, "\t[Error] Create Context Fail!\n");
+    cl_context CPU_context;
+    cl_context GPU_context;
+    CPU_context = clCreateContext(NULL, CPU_numDevices, CPU_devices, NULL, NULL, &status);
+    GPU_context = clCreateContext(NULL, GPU_numDevices, GPU_devices, NULL, NULL, &status); 
+    if(MSG) {
+        if(status == CL_SUCCESS) printf("\t[Info] Create Context Success!\n");  
+        else fprintf(stderr, "\t[Error] Create Context Fail!\n");
+    }
+    cl_command_queue CPU_cmdQueue;  
+    cl_command_queue GPU_cmdQueue;
+    CPU_cmdQueue = clCreateCommandQueue(CPU_context, CPU_devices[0], CL_QUEUE_PROFILING_ENABLE, &status);
+    GPU_cmdQueue = clCreateCommandQueue(GPU_context, GPU_devices[0], CL_QUEUE_PROFILING_ENABLE, &status);  
+    if(MSG){
+        if(status == CL_SUCCESS) printf("\t[Info] Create CommandQueue Success!\n");  
+        else fprintf(stderr, "\t[Error] Create CommandQueue Fail!\n");
+    }
 
-    cl_command_queue cmdQueue;  
-    cmdQueue = clCreateCommandQueue(context, devices[0], CL_QUEUE_PROFILING_ENABLE, &status);  
-    if(status == CL_SUCCESS) printf("\t[Info] Create CommandQueue Success!\n");  
-    else fprintf(stderr, "\t[Error] Create CommandQueue Fail!\n");
 
-    cl_mem bufA, buf_hash_table;
-    buf_hash_table = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(int) * hash_table_size, NULL, &status);
-    status = clEnqueueWriteBuffer(cmdQueue, buf_hash_table, CL_FALSE, 0, sizeof(int) * hash_table_size, hash_table, 0, NULL, NULL);
+    cl_mem CPU_data_buf, CPU_hashtable_buf;
+    CPU_hashtable_buf = clCreateBuffer(CPU_context, CL_MEM_READ_WRITE, sizeof(int) * hash_table_size, NULL, &status);
+    status = clEnqueueWriteBuffer(CPU_cmdQueue, CPU_hashtable_buf, CL_FALSE, 0, sizeof(int) * hash_table_size, hash_table, 0, NULL, NULL);
+    CPU_data_buf = clCreateBuffer(CPU_context, CL_MEM_READ_ONLY, sizeof(int) * TUPLES, NULL, &status);
+    status = clEnqueueWriteBuffer(CPU_cmdQueue, CPU_data_buf, CL_FALSE, 0, sizeof(int) * TUPLES, data, 0, NULL, NULL);
 
-    bufA = clCreateBuffer(context, CL_MEM_READ_ONLY, sizeof(int) * TUPLES, NULL, &status);
-    status = clEnqueueWriteBuffer(cmdQueue, bufA, CL_FALSE, 0, sizeof(int) * TUPLES, data, 0, NULL, NULL);
 
-    if(status == CL_SUCCESS) printf("\t[Info] CreateBuffer and enQueue Success!\n");  
-    else fprintf(stderr, "\t[Error] CreateBuffer and enQueue Fail!\n");
+
+    cl_mem GPU_data_buf, GPU_hashtable_buf, GPU_rehashtable_buf;
+    GPU_hashtable_buf = clCreateBuffer(GPU_context, CL_MEM_READ_WRITE, sizeof(int) * hash_table_size, NULL, &status);
+    status = clEnqueueWriteBuffer(GPU_cmdQueue, GPU_hashtable_buf, CL_FALSE, 0, sizeof(int) * hash_table_size, hash_table, 0, NULL, NULL);
+    GPU_data_buf = clCreateBuffer(GPU_context, CL_MEM_READ_ONLY, sizeof(int) * TUPLES, NULL, &status);
+    status = clEnqueueWriteBuffer(GPU_cmdQueue, GPU_data_buf, CL_FALSE, 0, sizeof(int) * TUPLES, data, 0, NULL, NULL);
+    GPU_rehashtable_buf = clCreateBuffer(GPU_context, CL_MEM_READ_WRITE, sizeof(int) * hash_table_size, NULL, &status);
+    status = clEnqueueWriteBuffer(GPU_cmdQueue, GPU_rehashtable_buf, CL_FALSE, 0, sizeof(int) * hash_table_size, rehash_table, 0, NULL, NULL);
+
+    if(MSG) {
+        if(status == CL_SUCCESS) printf("\t[Info] CreateBuffer and enQueue Success!\n");  
+        else fprintf(stderr, "\t[Error] CreateBuffer and enQueue Fail!\n");
+    }
 
     char *filename = "m_hash.cl";
     char *source_str;
     size_t source_size;
     loadKernel(filename, &source_str, &source_size);
 
-    cl_program program = clCreateProgramWithSource(context,   
+    cl_program CPU_program = clCreateProgramWithSource(CPU_context,   
         1,   
         (const char**)&source_str,   
         NULL,   
         &status);  
+    cl_program GPU_program = clCreateProgramWithSource(GPU_context,   
+        1,   
+        (const char**)&source_str,   
+        NULL,   
+        &status); 
+    if(MSG) {
+        if(status == CL_SUCCESS) printf("\t[Info] Create Program Success!\n");  
+        else fprintf(stderr, "\t[Error] Create Program Fail!\n"); 
+    }
+    status = clBuildProgram(CPU_program,        // The program object.  
+        CPU_numDevices,                         // The number of devices listed in device_list.  
+        CPU_devices,                            // A pointer to a list of devices associated with program.  
+        NULL,  
+        NULL,  
+        NULL  
+        );  
 
-    if(status == CL_SUCCESS) printf("\t[Info] Create Program Success!\n");  
-    else fprintf(stderr, "\t[Error] Create Program Fail!\n"); 
-
-    status = clBuildProgram(program,        // The program object.  
-        numDevices,                         // The number of devices listed in device_list.  
-        devices,                            // A pointer to a list of devices associated with program.  
+    status = clBuildProgram(GPU_program,        // The program object.  
+        GPU_numDevices,                         // The number of devices listed in device_list.  
+        GPU_devices,                            // A pointer to a list of devices associated with program.  
         NULL,  
         NULL,  
         NULL  
@@ -152,7 +200,7 @@ int main()
     {
         size_t len;
         char buffer[2048];
-        clGetProgramBuildInfo(program, devices[0], CL_PROGRAM_BUILD_LOG,
+        clGetProgramBuildInfo(CPU_program, CPU_devices[0], CL_PROGRAM_BUILD_LOG,
                               sizeof(buffer), buffer, &len);
         printf("%s\n", buffer);
         printf("Error Build Prog.\n");
@@ -160,72 +208,130 @@ int main()
         exit(status);
     }
 
-    if(status == CL_SUCCESS) printf("\t[Info] Build Program Success!\n");  
-    else fprintf(stderr, "\t[Error] Build Program Fail! Msg:%d \n", status);  
-    
-    cl_kernel kernel;  
-    kernel = clCreateKernel(program, "buildHashTableOptimistic", &status); 
-    cl_kernel validKernel;
-    validKernel = clCreateKernel(program, "validateHashTable", &status);
-    cl_kernel kernelPessimistic;
-    kernelPessimistic = clCreateKernel(program, "buildHashTablePessimistic", &status);
+    if(MSG) {
+        if(status == CL_SUCCESS) printf("\t[Info] Build Program Success!\n");  
+        else fprintf(stderr, "\t[Error] Build Program Fail! Msg:%d \n", status);  
+    }  
 
-    if(status == CL_SUCCESS) printf("\t[Info] Create kernel Success!\n");  
-    else fprintf(stderr, "\t[Error] Create kernel Fail! Msg:%d \n", status);
+    cl_kernel CPU_optKernel;  
+    CPU_optKernel = clCreateKernel(CPU_program, "buildHashTableOptimistic", &status); 
+    cl_kernel CPU_validKernell;
+    CPU_validKernell = clCreateKernel(CPU_program, "validateHashTable", &status);
+    cl_kernel CPU_pessimisticKernel;
+    CPU_pessimisticKernel = clCreateKernel(CPU_program, "buildHashTablePessimistic", &status);
+
+    cl_kernel GPU_optKernel;  
+    GPU_optKernel = clCreateKernel(GPU_program, "buildHashTableOptimistic", &status); 
+    cl_kernel GPU_validKernell;
+    GPU_validKernell = clCreateKernel(GPU_program, "validateHashTable", &status);
+    cl_kernel GPU_pessimisticKernel;
+    GPU_pessimisticKernel = clCreateKernel(GPU_program, "buildHashTablePessimistic", &status);
+
+    if(MSG) {
+        if(status == CL_SUCCESS) printf("\t[Info] Create kernel Success!\n");  
+        else fprintf(stderr, "\t[Error] Create kernel Fail! Msg:%d \n", status);
+    }
 
     size_t globalWorkSize[1];
     globalWorkSize[0] = TUPLES;
     unsigned char err = 0;
-    cl_mem error = NULL;
-    error = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(char), &err, &status);
+    cl_mem CPU_error = NULL;
+    cl_mem GPU_error = NULL;
+    CPU_error = clCreateBuffer(CPU_context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(char), &err, &status);
+    GPU_error = clCreateBuffer(GPU_context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(char), &err, &status);
 
-    status |= clSetKernelArg(kernel, 0, sizeof(cl_mem), &bufA); 
-    status |= clSetKernelArg(kernel, 1, sizeof(cl_mem), &buf_hash_table);  
-    status |= clSetKernelArg(kernel, 2, sizeof(int), &hash_table_size); 
+    //CPU
+    status |= clSetKernelArg(CPU_optKernel, 0, sizeof(cl_mem), &CPU_data_buf); 
+    status |= clSetKernelArg(CPU_optKernel, 1, sizeof(cl_mem), &CPU_hashtable_buf);  
+    status |= clSetKernelArg(CPU_optKernel, 2, sizeof(int), &hash_table_size); 
+    status |= clSetKernelArg(CPU_validKernell, 0, sizeof(cl_mem), &CPU_data_buf);
+    status |= clSetKernelArg(CPU_validKernell, 1, sizeof(cl_mem), &CPU_hashtable_buf);
+    status |= clSetKernelArg(CPU_validKernell, 2, sizeof(int), &hash_table_size);
+    status |= clSetKernelArg(CPU_validKernell, 3, sizeof(cl_mem), &CPU_error);   
+    status |= clSetKernelArg(CPU_pessimisticKernel, 0, sizeof(cl_mem), &CPU_data_buf);
+    status |= clSetKernelArg(CPU_pessimisticKernel, 1, sizeof(cl_mem), &CPU_hashtable_buf);
+    status |= clSetKernelArg(CPU_pessimisticKernel, 2, sizeof(int), &hash_table_size);
+    status |= clSetKernelArg(CPU_pessimisticKernel, 3, sizeof(cl_mem), &CPU_error);
+    if(MSG) {
+        if(status == CL_SUCCESS) printf("\t[Info] CPU Set kernel Argu Success!\n");  
+        else fprintf(stderr, "\t[Error] Set kernel Argu Fail! Msg:%d \n", status);
+    }
 
-    status |= clSetKernelArg(validKernel, 0, sizeof(cl_mem), &bufA);
-    status |= clSetKernelArg(validKernel, 1, sizeof(cl_mem), &buf_hash_table);
-    status |= clSetKernelArg(validKernel, 2, sizeof(int), &hash_table_size);
-    status |= clSetKernelArg(validKernel, 3, sizeof(cl_mem), &error);
-    
-    status |= clSetKernelArg(kernelPessimistic, 0, sizeof(cl_mem), &bufA);
-    status |= clSetKernelArg(kernelPessimistic, 1, sizeof(cl_mem), &buf_hash_table);
-    status |= clSetKernelArg(kernelPessimistic, 2, sizeof(int), &hash_table_size);
-    status |= clSetKernelArg(kernelPessimistic, 3, sizeof(cl_mem), &error);
-    if(status == CL_SUCCESS) printf("\t[Info] Set kernel Argu Success!\n");  
-    else fprintf(stderr, "\t[Error] Set kernel Argu Fail! Msg:%d \n", status);
+    //GPU
+    status |= clSetKernelArg(GPU_optKernel, 0, sizeof(cl_mem), &GPU_data_buf); 
+    status |= clSetKernelArg(GPU_optKernel, 1, sizeof(cl_mem), &GPU_hashtable_buf);  
+    status |= clSetKernelArg(GPU_optKernel, 2, sizeof(int), &hash_table_size); 
+    status |= clSetKernelArg(GPU_validKernell, 0, sizeof(cl_mem), &GPU_data_buf);
+    status |= clSetKernelArg(GPU_validKernell, 1, sizeof(cl_mem), &GPU_hashtable_buf);
+    status |= clSetKernelArg(GPU_validKernell, 2, sizeof(int), &hash_table_size);
+    status |= clSetKernelArg(GPU_validKernell, 3, sizeof(cl_mem), &GPU_error);   
+    status |= clSetKernelArg(GPU_pessimisticKernel, 0, sizeof(cl_mem), &GPU_data_buf);
+    status |= clSetKernelArg(GPU_pessimisticKernel, 1, sizeof(cl_mem), &GPU_hashtable_buf);
+    status |= clSetKernelArg(GPU_pessimisticKernel, 2, sizeof(int), &hash_table_size);
+    status |= clSetKernelArg(GPU_pessimisticKernel, 3, sizeof(cl_mem), &GPU_error);
 
-    cl_event k_event[2];
+    if(MSG) {
+        if(status == CL_SUCCESS) printf("\t[Info] Set kernel Argu Success!\n");  
+        else fprintf(stderr, "\t[Error] Set kernel Argu Fail! Msg:%d \n", status);
+    }
+    cl_event CPU_event[2];
+    cl_event GPU_event[2];
     cl_uint num_events_in_wait_list;
-    cl_command_queue profile_queue;
-    profile_queue = clCreateCommandQueue(context, devices[0], CL_QUEUE_PROFILING_ENABLE, &status);
 
-    status = clEnqueueNDRangeKernel(cmdQueue,       // A valid command-queue  
-        kernel,         // A valid kernel object.  
+
+    cl_ulong start_time, end_time;
+    size_t return_bytes;
+    double runtime;
+
+    // Enqueue CPU Start
+    status = clEnqueueNDRangeKernel(CPU_cmdQueue,       // A valid command-queue  
+        CPU_optKernel,         // A valid kernel object.  
         1,              // work_dim  
         NULL,           // *global_work_offset  
         globalWorkSize, // *global_work_size  
         NULL,           // local_work_size  
         0,              // num_events_in_wait_list  
         NULL,           // *event_wait_list  
-        &k_event[0]            // *event  
+        &CPU_event[0]            // *event  
         );  
     
-    clWaitForEvents(1, &k_event[0]);
-    cl_ulong start_time, end_time;
-    size_t return_bytes;
-    err = clGetEventProfilingInfo(k_event[0], CL_PROFILING_COMMAND_START, sizeof(cl_ulong), &start_time, &return_bytes);
-    err = clGetEventProfilingInfo(k_event[0], CL_PROFILING_COMMAND_END, sizeof(cl_ulong), &end_time, &return_bytes);
-    double runtime = (double)(end_time - start_time);
-    printf("\t[Info] Hash1 Run time = %fms\n", runtime/1000000);
+    clWaitForEvents(1, &CPU_event[0]);
+    err = clGetEventProfilingInfo(CPU_event[0], CL_PROFILING_COMMAND_START, sizeof(cl_ulong), &start_time, &return_bytes);
+    err = clGetEventProfilingInfo(CPU_event[0], CL_PROFILING_COMMAND_END, sizeof(cl_ulong), &end_time, &return_bytes);
+    runtime = (double)(end_time - start_time);
+    printf("\t[Info] CPU Hash1 Run time = %fms\n", runtime/1000000);
 
-    if(status == CL_SUCCESS) printf("\t[Info] enQueue kernel Success!\n");  
-    else fprintf(stderr, "\t[Error] enQueue kernel Fail! Msg:%d \n", status);
+    if(MSG) {
+        if(status == CL_SUCCESS) printf("\t[Info] enQueue kernel Success!\n");  
+        else fprintf(stderr, "\t[Error] enQueue kernel Fail! Msg:%d \n", status);
+    }
+    // Enqueue CPU End
+
+    //Enqueue GPU Start
+    status = clEnqueueNDRangeKernel(GPU_cmdQueue,       // A valid command-queue  
+        GPU_optKernel,         // A valid kernel object.  
+        1,              // work_dim  
+        NULL,           // *global_work_offset  
+        globalWorkSize, // *global_work_size  
+        NULL,           // local_work_size  
+        0,              // num_events_in_wait_list  
+        NULL,           // *event_wait_list  
+        &GPU_event[0]            // *event  
+        );  
+    
+    clWaitForEvents(1, &GPU_event[0]);
+    err = clGetEventProfilingInfo(GPU_event[0], CL_PROFILING_COMMAND_START, sizeof(cl_ulong), &start_time, &return_bytes);
+    err = clGetEventProfilingInfo(GPU_event[0], CL_PROFILING_COMMAND_END, sizeof(cl_ulong), &end_time, &return_bytes);
+    runtime = (double)(end_time - start_time);
+    printf("\t[Info] GPU Hash1 Run time = %fms\n", runtime/1000000);
+    //ENQUEUE GPU End
+
+
 
 
     //  Read build HT result
-    status = clEnqueueReadBuffer(cmdQueue,     // Refers to the command-queue in which the read command will be queued  
-        buf_hash_table,         // Refers to a valid buffer object.  
+    status = clEnqueueReadBuffer(CPU_cmdQueue,     // Refers to the command-queue in which the read command will be queued  
+        CPU_hashtable_buf,         // Refers to a valid buffer object.  
         CL_TRUE,      // Indicates if the read operations are blocking or non-blocking.  
         0,            // The offset in bytes in the buffer object to read from.  
         sizeof(int) * hash_table_size,     // The size in bytes of data being read.  
@@ -235,21 +341,45 @@ int main()
         NULL          // *event  
         ); 
 
-    //  Enqueue validate kernel
-    status = clEnqueueNDRangeKernel(cmdQueue,       // A valid command-queue  
-        validKernel,         // A valid kernel object.  
+    //  CPU validate kernel
+    status = clEnqueueNDRangeKernel(CPU_cmdQueue,       // A valid command-queue  
+        CPU_validKernell,         // A valid kernel object.  
         1,              // work_dim  
         NULL,           // *global_work_offset  
         globalWorkSize, // *global_work_size  
         NULL,           // local_work_size  
         0,              // num_events_in_wait_list  
         NULL,           // *event_wait_list  
-        NULL            // *event  
+        &CPU_event[1]            // *event  
         );  
-    
+    clWaitForEvents(1, &CPU_event[1]);
+    err = clGetEventProfilingInfo(CPU_event[1], CL_PROFILING_COMMAND_START, sizeof(cl_ulong), &start_time, &return_bytes);
+    err = clGetEventProfilingInfo(CPU_event[1], CL_PROFILING_COMMAND_END, sizeof(cl_ulong), &end_time, &return_bytes);
+    runtime = (double)(end_time - start_time);
+    printf("\t[Info] CPU Validate Run time = %fms\n", runtime/1000000);
+
+    //  GPU validate kernel
+    status = clEnqueueNDRangeKernel(GPU_cmdQueue,       // A valid command-queue  
+        GPU_validKernell,         // A valid kernel object.  
+        1,              // work_dim  
+        NULL,           // *global_work_offset  
+        globalWorkSize, // *global_work_size  
+        NULL,           // local_work_size  
+        0,              // num_events_in_wait_list  
+        NULL,           // *event_wait_list  
+        &GPU_event[1]            // *event  
+        );  
+    clWaitForEvents(1, &GPU_event[1]);
+    err = clGetEventProfilingInfo(GPU_event[1], CL_PROFILING_COMMAND_START, sizeof(cl_ulong), &start_time, &return_bytes);
+    err = clGetEventProfilingInfo(GPU_event[1], CL_PROFILING_COMMAND_END, sizeof(cl_ulong), &end_time, &return_bytes);
+    runtime = (double)(end_time - start_time);
+    printf("\t[Info] GPU Validate Run time = %fms\n", runtime/1000000);
+    //  GPU validate kernel End
+
+
     //  Return validate value
-    status = clEnqueueReadBuffer(cmdQueue,     // Refers to the command-queue in which the read command will be queued  
-        error,         // Refers to a valid buffer object.  
+    status = clEnqueueReadBuffer(CPU_cmdQueue,     // Refers to the command-queue in which the read command will be queued  
+        CPU_error,         // Refers to a valid buffer object.  
         CL_TRUE,      // Indicates if the read operations are blocking or non-blocking.  
         0,            // The offset in bytes in the buffer object to read from.  
         sizeof(char),     // The size in bytes of data being read.  
@@ -264,43 +394,96 @@ int main()
         printf("\n\t-----Collision-----\n");
 
         //  Enqueue Pessimistic kernel
-        status = clEnqueueNDRangeKernel(cmdQueue,       // A valid command-queue  
-            kernelPessimistic,         // A valid kernel object.  
+        status = clEnqueueNDRangeKernel(CPU_cmdQueue,       // A valid command-queue  
+            CPU_pessimisticKernel,         // A valid kernel object.  
             1,              // work_dim  
             NULL,           // *global_work_offset  
             globalWorkSize, // *global_work_size  
             NULL,           // local_work_size  
             0,              // num_events_in_wait_list  
             NULL,           // *event_wait_list  
-            &k_event[1]            // *event  
+            &CPU_event[1]            // *event  
             );  
-        if(status == CL_SUCCESS) printf("\t[Info] enQueue Pessimistic Success!\n");  
-        else fprintf(stderr, "\t[Error] enQueue Pessimistic Fail! Msg:%d \n", status);
+        if(MSG) {
+            if(status == CL_SUCCESS) printf("\t[Info] enQueue Pessimistic Success!\n");  
+            else fprintf(stderr, "\t[Error] enQueue Pessimistic Fail! Msg:%d \n", status);
+        }
 
         //  Get runtime info
-        clWaitForEvents(1, &k_event[1]);
-        err = clGetEventProfilingInfo(k_event[1], CL_PROFILING_COMMAND_START, sizeof(cl_ulong), &start_time, &return_bytes);
-        err = clGetEventProfilingInfo(k_event[1], CL_PROFILING_COMMAND_END, sizeof(cl_ulong), &end_time, &return_bytes);
+        clWaitForEvents(1, &CPU_event[1]);
+        err = clGetEventProfilingInfo(CPU_event[1], CL_PROFILING_COMMAND_START, sizeof(cl_ulong), &start_time, &return_bytes);
+        err = clGetEventProfilingInfo(CPU_event[1], CL_PROFILING_COMMAND_END, sizeof(cl_ulong), &end_time, &return_bytes);
         runtime = (double)(end_time - start_time);
-        printf("\t[Info] Persimisstic Run time = %fms\n", runtime/1000000);
+        printf("\t[Info] CPU Persimisstic Run time = %fms\n", runtime/1000000);
+
+        status = clEnqueueNDRangeKernel(GPU_cmdQueue,       // A valid command-queue  
+            GPU_pessimisticKernel,         // A valid kernel object.  
+            1,              // work_dim  
+            NULL,           // *global_work_offset  
+            globalWorkSize, // *global_work_size  
+            NULL,           // local_work_size  
+            0,              // num_events_in_wait_list  
+            NULL,           // *event_wait_list  
+            &GPU_event[1]            // *event  
+            );  
+        clWaitForEvents(1, &GPU_event[1]);
+        err = clGetEventProfilingInfo(GPU_event[1], CL_PROFILING_COMMAND_START, sizeof(cl_ulong), &start_time, &return_bytes);
+        err = clGetEventProfilingInfo(GPU_event[1], CL_PROFILING_COMMAND_END, sizeof(cl_ulong), &end_time, &return_bytes);
+        runtime = (double)(end_time - start_time);
+        printf("\t[Info] GPU Persimisstic Run time = %fms\n", runtime/1000000);
 
 
 
-
-        status = clEnqueueReadBuffer(cmdQueue,     // Refers to the command-queue in which the read command will be queued  
-            buf_hash_table,         // Refers to a valid buffer object.  
+        status = clEnqueueReadBuffer(CPU_cmdQueue,     // Refers to the command-queue in which the read command will be queued  
+            CPU_hashtable_buf,         // Refers to a valid buffer object.  
             CL_TRUE,      // Indicates if the read operations are blocking or non-blocking.  
             0,            // The offset in bytes in the buffer object to read from.  
             sizeof(int) * hash_table_size,     // The size in bytes of data being read.  
             hash_table,            // The pointer to buffer in host memory where data is to be read into.  
             0,            // num_events_in_wait_list  
             NULL,         // *event_wait_list  
-            NULL          // *event  
+            &CPU_event[1]          // *event  
             ); 
+        clWaitForEvents(1, &CPU_event[1]);
+        int *hashT;
+        hashT = (int*)malloc(sizeof(int) * hash_table_size);
+
+        status = clEnqueueReadBuffer(GPU_cmdQueue,     // Refers to the command-queue in which the read command will be queued  
+            GPU_hashtable_buf,         // Refers to a valid buffer object.  
+            CL_TRUE,      // Indicates if the read operations are blocking or non-blocking.  
+            0,            // The offset in bytes in the buffer object to read from.  
+            sizeof(int) * hash_table_size,     // The size in bytes of data being read.  
+            hashT,            // The pointer to buffer in host memory where data is to be read into.  
+            0,            // num_events_in_wait_list  
+            NULL,         // *event_wait_list  
+            &GPU_event[1]          // *event  
+            );
+        clWaitForEvents(1, &GPU_event[1]);
+
+        if(DEBUG) {
+            for(i=0; i<hash_table_size; i++) {
+                printf("GPU [%d]\t%d\n",i,hashT[i]);
+            }
+
+            // Validate CPU and GPU hash result
+            for(i=0; i<hash_table_size; i++)
+            {
+                if(hash_table[i] != hashT[i]) {
+                    printf("DONT equal! CPU: %d\tGPU: %d\n",hash_table[i], hashT[i]);
+                }
+
+            }
+        }
+
+
+
     } 
 
     //debug code
     if(DEBUG){ 
+        for(i=0; i<hash_table_size; i++) {
+            printf("[%d]\t%d\n",i,hash_table[i]);
+        }
         if(status != CL_SUCCESS) {
             printf("status ERROR\n");
         }
